@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Träningslogg</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#111111">
+<link rel="icon" href="icon-192.png">
+<style>
+  body{font-family:-apple-system,sans-serif;background:#111;color:#fff;margin:0;padding:16px 12px 60px;text-align:center;}
+  h2{margin:8px 0 4px;}
+  h3{margin:12px 0 8px;font-size:17px;}
+  select,input{font-size:17px;padding:11px;width:100%;box-sizing:border-box;border-radius:8px;border:none;margin-bottom:10px;}
+  button{font-size:18px;padding:14px;border-radius:10px;border:none;cursor:pointer;width:100%;box-sizing:border-box;}
+  .section{margin-top:14px;padding-top:14px;border-top:1px solid #333;}
+  #add-set{background:#3498db;color:#fff;}
+  #save-ex{background:#2ecc71;color:#fff;font-size:20px;padding:18px;margin-top:12px;}
+  .small-btn{font-size:15px;padding:11px;width:48%;display:inline-block;}
+  #add-btn{background:#3498db;color:#fff;} #rem-btn{background:#e67e22;color:#fff;}
+  #status{margin-top:12px;font-size:16px;min-height:22px;color:#f1c40f;}
+  #sync-badge{font-size:13px;color:#aaa;margin-bottom:6px;}
+  .row3{display:flex;gap:8px;}
+  .row3 input{flex:1;}
+  .lbl{font-size:12px;color:#888;text-align:left;margin-bottom:2px;}
+  .card{background:#1c1c1c;border-radius:10px;padding:12px;margin-bottom:10px;text-align:left;}
+  .card .date{font-size:12px;color:#888;margin-bottom:6px;}
+  .setline{font-size:16px;padding:3px 0;font-variant-numeric:tabular-nums;}
+  .comment{font-size:14px;color:#bbb;font-style:italic;margin-top:6px;}
+  .cur-set{background:#222;border-radius:8px;padding:9px 12px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;font-size:16px;}
+  .del{background:#c0392b;color:#fff;border:none;border-radius:6px;padding:5px 11px;font-size:14px;width:auto;}
+  .empty{color:#777;font-size:14px;}
+</style>
+</head>
+<body>
+
+<h2>Träningslogg</h2>
+<div id="sync-badge">Laddar...</div>
+
+<select id="exercise" onchange="onExerciseChange()"><option>Laddar övningar...</option></select>
+
+<div id="last-session"></div>
+
+<div class="section">
+  <h3>Nytt set</h3>
+  <div class="row3">
+    <div style="flex:1;"><div class="lbl">Vikt (kg)</div><input type="number" inputmode="decimal" id="weight" step="0.5"></div>
+    <div style="flex:1;"><div class="lbl">Reps</div><input type="number" inputmode="numeric" id="reps"></div>
+    <div style="flex:1;"><div class="lbl">RIR</div><input type="number" inputmode="numeric" id="rir"></div>
+  </div>
+  <button id="add-set" onclick="addSet()">+ Lägg till set</button>
+</div>
+
+<div class="section">
+  <h3>Dagens set</h3>
+  <div id="current-sets"><div class="empty">Inga set än</div></div>
+  <input type="text" id="comment" placeholder="Kommentar (frivilligt)">
+  <button id="save-ex" onclick="saveExercise()">Spara övning</button>
+</div>
+
+<div id="status"></div>
+
+<div class="section">
+  <h3>Hantera övningar</h3>
+  <input type="text" id="new-exercise" placeholder="Ny övning...">
+  <button id="add-btn" class="small-btn" onclick="addExercise()">Lägg till</button>
+  <button id="rem-btn" class="small-btn" onclick="removeExercise()">Ta bort vald</button>
+</div>
+
+<script>
+// ====== KONFIGURATION ======
+var API_URL = 'KLISTRA_IN_DIN_APPS_SCRIPT_URL_HÄR';
+var API_TOKEN = 'BYT_TILL_EN_EGEN_HEMLIG_KOD';
+// ============================
+
+var currentSets = [];
+
+window.onload = function () {
+  renderExercises(getLocal('exercises', []));
+  renderCurrentSets();
+  updateSyncBadge();
+  onExerciseChange();
+  syncQueue();
+  refreshFromServer();
+};
+
+// ---------- Hjälpare ----------
+function getLocal(key, fallback) {
+  try { return JSON.parse(localStorage.getItem(key)) || fallback; }
+  catch (e) { return fallback; }
+}
+function setLocal(key, val) { localStorage.setItem(key, JSON.stringify(val)); }
+function el(id) { return document.getElementById(id); }
+function status(msg, clearAfter) {
+  el('status').innerText = msg;
+  if (clearAfter) setTimeout(function () { el('status').innerText = ''; }, clearAfter);
+}
+
+function apiGet(action) {
+  return fetch(API_URL + '?action=' + action + '&token=' + encodeURIComponent(API_TOKEN))
+    .then(function (r) { return r.json(); });
+}
+function apiPost(payload) {
+  payload.token = API_TOKEN;
+  return fetch(API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify(payload),
+  }).then(function (r) { return r.json(); });
+}
+
+// ---------- Server-synk ----------
+function refreshFromServer() {
+  if (!navigator.onLine) return;
+  apiGet('getExercises').then(function (list) {
+    if (Array.isArray(list)) { setLocal('exercises', list); renderExercises(list); onExerciseChange(); }
+  }).catch(function () {});
+
+  apiGet('getLastSessions').then(function (map) {
+    if (map && !map.error) { setLocal('last_sessions', map); onExerciseChange(); }
+  }).catch(function () {});
+}
+
+function updateSyncBadge() {
+  var q = getLocal('sync_queue', []);
+  var b = el('sync-badge');
+  if (q.length > 0) {
+    b.innerText = '⏳ ' + q.length + ' övningar väntar på synk';
+    b.style.color = '#e67e22';
+  } else {
+    b.innerText = '✓ Allt synkat';
+    b.style.color = '#aaa';
+  }
+}
+
+function syncQueue() {
+  if (!navigator.onLine) return;
+  var q = getLocal('sync_queue', []);
+  if (q.length === 0) return;
+  status('Synkar ' + q.length + ' övningar...');
+  apiPost({ action: 'saveWorkouts', entries: q })
+    .then(function () {
+      setLocal('sync_queue', []);
+      updateSyncBadge();
+      status('Synkad med Google Sheets!', 3000);
+    })
+    .catch(function () { status('Nätverksfel — sparat lokalt, synkar senare.', 4000); });
+}
+
+// ---------- Övningar ----------
+function renderExercises(list) {
+  var sel = el('exercise');
+  var prev = sel.value;
+  sel.innerHTML = '';
+  list.forEach(function (name) {
+    var o = document.createElement('option');
+    o.value = name; o.innerText = name;
+    sel.appendChild(o);
+  });
+  if (list.indexOf(prev) !== -1) sel.value = prev;
+}
+
+function addExercise() {
+  var v = el('new-exercise').value.trim();
+  if (!v) return;
+  status('Lägger till...');
+  apiPost({ action: 'addExercise', name: v })
+    .then(function (list) {
+      setLocal('exercises', list); renderExercises(list);
+      el('new-exercise').value = '';
+      status('Övning tillagd!', 2500);
+    })
+    .catch(function () { status('Kunde inte lägga till (offline?).', 3000); });
+}
+
+function removeExercise() {
+  var v = el('exercise').value;
+  if (!v) return;
+  if (!confirm('Ta bort övningen "' + v + '" ur listan?\n(Loggad historik i Sheetet påverkas inte.)')) return;
+  status('Tar bort...');
+  apiPost({ action: 'removeExercise', name: v })
+    .then(function (list) {
+      setLocal('exercises', list); renderExercises(list); onExerciseChange();
+      status('Övning borttagen!', 2500);
+    })
+    .catch(function () { status('Kunde inte ta bort (offline?).', 3000); });
+}
+
+// ---------- Förra gången ----------
+function onExerciseChange() {
+  var ex = el('exercise').value;
+  var map = getLocal('last_sessions', {});
+  var box = el('last-session');
+  var prev = map[ex];
+
+  if (!prev || !prev.sets || prev.sets.length === 0) {
+    box.innerHTML = '<div class="card"><div class="date">Förra gången</div><div class="empty">Ingen tidigare logg för den här övningen.</div></div>';
+    return;
+  }
+
+  var html = '<div class="card"><div class="date">Förra gången — ' + prev.date + '</div>';
+  prev.sets.forEach(function (s, i) {
+    html += '<div class="setline">Set ' + (i + 1) + ': <b>' + s.weight + ' kg</b> × ' + s.reps + ' reps' +
+      (s.rir !== '' && s.rir !== null && s.rir !== undefined ? ' @ RIR ' + s.rir : '') + '</div>';
+  });
+  if (prev.comment) html += '<div class="comment">"' + prev.comment + '"</div>';
+  html += '</div>';
+  box.innerHTML = html;
+}
+
+// ---------- Dagens set ----------
+function addSet() {
+  var w = el('weight').value;
+  var r = el('reps').value;
+  var rir = el('rir').value;
+  if (w === '' || r === '') { status('Fyll i vikt och reps.', 2500); return; }
+
+  currentSets.push({ weight: parseFloat(w), reps: parseInt(r), rir: rir === '' ? '' : parseInt(rir) });
+  renderCurrentSets();
+  el('reps').value = '';
+  el('rir').value = '';
+  // vikten behålls — oftast samma mellan set
+}
+
+function renderCurrentSets() {
+  var box = el('current-sets');
+  if (currentSets.length === 0) { box.innerHTML = '<div class="empty">Inga set än</div>'; return; }
+  var html = '';
+  currentSets.forEach(function (s, i) {
+    html += '<div class="cur-set"><span>Set ' + (i + 1) + ': <b>' + s.weight + ' kg</b> × ' + s.reps +
+      (s.rir !== '' ? ' @ RIR ' + s.rir : '') + '</span>' +
+      '<button class="del" onclick="removeSet(' + i + ')">✕</button></div>';
+  });
+  box.innerHTML = html;
+}
+
+function removeSet(i) { currentSets.splice(i, 1); renderCurrentSets(); }
+
+function saveExercise() {
+  if (currentSets.length === 0) { status('Lägg till minst ett set först.', 2500); return; }
+  var ex = el('exercise').value;
+  if (!ex) { status('Välj en övning.', 2500); return; }
+
+  var entry = {
+    exercise: ex,
+    sessionId: new Date().getTime(),
+    sets: currentSets.slice(),
+    comment: el('comment').value,
+  };
+
+  var q = getLocal('sync_queue', []);
+  q.push(entry);
+  setLocal('sync_queue', q);
+
+  // Uppdatera "förra gången" lokalt direkt så det syns även offline
+  var map = getLocal('last_sessions', {});
+  var d = new Date();
+  map[ex] = {
+    date: d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()),
+    sets: entry.sets,
+    comment: entry.comment,
+  };
+  setLocal('last_sessions', map);
+
+  currentSets = [];
+  el('comment').value = '';
+  el('weight').value = '';
+  renderCurrentSets();
+  updateSyncBadge();
+  onExerciseChange();
+  status('Sparat: ' + ex + ' (' + entry.sets.length + ' set)', 3000);
+
+  syncQueue();
+}
+
+function pad(n) { return n < 10 ? '0' + n : '' + n; }
+
+window.addEventListener('online', function () { syncQueue(); refreshFromServer(); });
+</script>
+</body>
+</html>
